@@ -25,4 +25,4 @@ accelerate launch \
     --fsdp_sharding_strategy=FULL_SHARD \
     --fsdp_auto_wrap_policy=TRANSFORMER_BASED_WRAP \
     --fsdp_backward_prefetch=BACKWARD_PRE \
-    train_mac_distributed.py
+    train_mac.py
