@@ -33,5 +33,15 @@ Step 180 | Training Loss: 7.4838
 Step 180 | Validation Loss: 7.4714
 Step 200 | Training Loss: 7.3697
 Step 200 | Validation Loss: 7.4896
+....
+Step 440 | Training Loss: 6.4870
+Step 440 | Validation Loss: 6.5944
+Checkpoint saved at step 450
+Step 460 | Training Loss: 6.2658
+Step 460 | Validation Loss: 6.3194
+Step 480 | Training Loss: 6.3541
+Step 480 | Validation Loss: 6.2988
+Step 500 | Training Loss: 6.2601
+Step 500 | Validation Loss: 6.1591
 
 ```
