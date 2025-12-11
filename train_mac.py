@@ -59,7 +59,7 @@ USE_ACCELERATED_SCAN = True
 USE_FLEX_ATTN = True
 USE_FAST_INFERENCE = False
 NUM_PROC = 4
-BLOCK_SIZE = 1024
+BLOCK_SIZE = 2048
 
 # ==================== Helper Functions ====================
 def cycle(loader):
@@ -340,9 +340,10 @@ def main():
     global_step = 0
     train_iter = cycle(train_loader)
     val_iter = cycle(val_loader)
-    
+    total_training_steps = NUM_BATCHES // GRADIENT_ACCUMULATE_EVERY
+   
     if accelerator.is_main_process:
-        print("Starting training...")
+        print(f"Starting training...\nTotal training steps: {total_training_steps}")
     
     for batch_idx in range(NUM_BATCHES):
         model.train()
@@ -368,8 +369,9 @@ def main():
             if global_step % LOG_EVERY == 0:
                 # Gather loss from all processes
                 loss_value = accelerator.gather(loss).mean().item()
+                percent = (global_step / total_training_steps) * 100
                 if accelerator.is_main_process:
-                    print(f"Step {global_step} | Training Loss: {loss_value:.4f}")
+                    print(f"Step {global_step}/{total_training_steps} ({percent:.2f}%) | Training Loss: {loss_value:.4f}")
             
             # Validation
             if global_step % LOG_EVERY == 0:
@@ -379,7 +381,7 @@ def main():
                     val_loss = model(val_batch, return_loss=True)
                     val_loss_value = accelerator.gather(val_loss).mean().item()
                     if accelerator.is_main_process:
-                        print(f"Step {global_step} | Validation Loss: {val_loss_value:.4f}")
+                        print(f"Step {global_step}/{total_training_steps} | Validation Loss: {val_loss_value:.4f}")
             
             # Save checkpoint every SAVE_EVERY steps
             if global_step % SAVE_EVERY == 0:
@@ -407,7 +409,8 @@ def main():
             
             # Generate samples
             if SHOULD_GENERATE and global_step % GENERATE_EVERY == 0:
-                if accelerator.is_main_process:
+                
+                def run_generation_task():
                     model.eval()
                     with torch.no_grad():
                         # Random sample from validation set
@@ -422,6 +425,7 @@ def main():
                         print('*' * 60)
                         
                         # Generate
+                        # 注意：在 summon_full_params 上下文中，unwrap 后的模型参数是完整的 2D 矩阵
                         unwrapped_model = accelerator.unwrap_model(model)
                         sample = unwrapped_model.sample(
                             inp[None, ...].to(accelerator.device), 
@@ -431,6 +435,17 @@ def main():
                         output_str = decode_tokens(tokenizer, sample[0])
                         print(f"Generated: {output_str}")
                         print('='*60 + "\n")
+
+               
+                if accelerator.distributed_type == DistributedType.FSDP:
+                    
+                    with FSDP.summon_full_params(model, writeback=False, rank0_only=True):
+                        if accelerator.is_main_process:
+                            run_generation_task()
+                else:
+                    
+                    if accelerator.is_main_process:
+                        run_generation_task()
     
     if accelerator.is_main_process:
         print("Training completed!")
