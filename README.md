@@ -6,7 +6,10 @@ ref: [lucidrains/titans-pytorch](https://github.com/lucidrains/titans-pytorch)
 dataset format
 data = {"messages":[{"role":"user","content":xxx},{"role":"assistant","content":xxx},....]}
 ```
-## sh launch_script.sh
+## launch the script
+```python
+sh launch_script.sh
+```
 
 ### Loss
 ```python
