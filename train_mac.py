@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from datasets import load_dataset, concatenate_datasets, Dataset
 from transformers import MistralCommonTokenizer
 from accelerate import Accelerator
+from accelerate.utils import DistributedType
 from accelerate.utils import DistributedDataParallelKwargs
 from adam_atan2_pytorch import AdoptAtan2
 
