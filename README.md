@@ -45,3 +45,55 @@ Step 500 | Training Loss: 6.2601
 Step 500 | Validation Loss: 6.1591
 
 ```
+
+
+## Infrence
+
+```python
+total model params is 122M
+max_length=256
+[Input]: Please explain the theory of relativity.
+[Output]:
+I do not have access to current information and the exact location of the first class. However, I can provide you with the list of available options for the previous class:
+
+1. name: name, date, location, and location
+
+2. location: name and location
+3. location: location
+4. location: name
+
+3. location: location, location, location, and location
+
+4. location: location, location, and location
+
+5. location: location, location, and location
+6. location: location, location, and location
+
+7. location: the location of the location and the location, including the
+
+
+[Input]: Write a poem about the ocean.
+[Output]:
+As the sun sets on the beach,
+A canvas of flowers,
+A canvas so deep,
+A sight to behold.
+
+The sun sets over the horizon,
+A sight to see,
+The stars twinkle above,
+A sight that's so captivates.
+
+The trees begin to sway,
+The landscape is full of wonder,
+The sky is a canvas of hues,
+A canvas of colors, a sight to behold.
+
+The landscape is breathtaking,
+A breathtaking sight to see,
+A perfect sight to behold.
+
+The landscape is a sight to behold,
+As if in awe of the beauty,
+A masterpiece of nature
+```
