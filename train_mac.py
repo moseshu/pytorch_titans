@@ -8,16 +8,17 @@ from torch.utils.data import DataLoader
 from datasets import load_dataset, concatenate_datasets, Dataset
 from transformers import MistralCommonTokenizer
 from accelerate import Accelerator
-from accelerate.utils import DistributedType
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from accelerate.utils import DistributedDataParallelKwargs
 from adam_atan2_pytorch import AdoptAtan2
-
+from accelerate.utils import DistributedType
 from memory_models import MemoryMLP, MemoryAttention
 from mac_transformer import MemoryAsContextTransformer
+from accelerate.utils import DistributedType
+
 
 # ==================== Configuration ====================
-NUM_BATCHES = int(1e5)
+# NUM_BATCHES = int(1e5)
+NUM_EPOCHS = 3
 BATCH_SIZE = 2
 GRADIENT_ACCUMULATE_EVERY = 4
 LEARNING_RATE = 2e-4
@@ -26,8 +27,8 @@ SAVE_EVERY = 50  # Save checkpoint every 500 steps
 MAX_CHECKPOINTS = 3  # Keep only last 3 checkpoints
 GENERATE_EVERY = 500
 PRIME_LENGTH = 100
-GENERATE_LENGTH = 512
-SHOULD_GENERATE = True
+GENERATE_LENGTH = 4096
+SHOULD_GENERATE = False
 
 # Neural memory related
 NEURAL_MEMORY_DEPTH = 2
@@ -218,6 +219,8 @@ def main():
         gradient_accumulation_steps=GRADIENT_ACCUMULATE_EVERY,
         mixed_precision="bf16",  # Use bf16 for better stability
         kwargs_handlers=[ddp_kwargs],
+        log_with="tensorboard",
+        project_dir="./logs" 
     )
     
     # Set up logging only on main process
@@ -230,6 +233,11 @@ def main():
         print(f"Gradient accumulation steps: {GRADIENT_ACCUMULATE_EVERY}")
         print(f"Effective batch size: {BATCH_SIZE * GRADIENT_ACCUMULATE_EVERY * accelerator.num_processes}")
         print("=" * 60)
+        accelerator.init_trackers("titans_experiment", config={
+            "learning_rate": LEARNING_RATE,
+            "batch_size": BATCH_SIZE,
+            "num_epochs": NUM_EPOCHS
+        })
     
     # Load tokenizer
     tokenizer = MistralCommonTokenizer.from_pretrained(TOKENIZER_PATH)
@@ -269,12 +277,6 @@ def main():
         pin_memory=True
     )
     
-    # Create memory model
-    if USE_MEM_ATTENTION_MODEL:
-        neural_memory_model = MemoryAttention(dim=64)
-    else:
-        neural_memory_model = MemoryMLP(dim=64, depth=NEURAL_MEMORY_DEPTH)
-    
     # VARIANT = "TITANS" # L2 (Original)
     # VARIANT = "MONETA" # Lp
     VARIANT = "TITANS"   # Huber
@@ -287,45 +289,64 @@ def main():
         # default Titans L2
         loss_fn = lambda pred, target: (pred - target).pow(2).mean(dim=-1)
 
+    def build_model():
+        """Helper so we can reinstantiate a full-parameter copy for generation."""
+        if USE_MEM_ATTENTION_MODEL:
+            neural_memory_model = MemoryAttention(dim=64)
+        else:
+            neural_memory_model = MemoryMLP(dim=64, depth=NEURAL_MEMORY_DEPTH)
+
+        return MemoryAsContextTransformer(
+            num_tokens=tokenizer.vocab_size,
+            dim=384,
+            depth=8,
+            segment_len=WINDOW_SIZE,
+            num_persist_mem_tokens=NUM_PERSIST_MEM,
+            num_longterm_mem_tokens=NUM_LONGTERM_MEM,
+            neural_memory_layers=NEURAL_MEM_LAYERS,
+            neural_memory_segment_len=NEURAL_MEM_SEGMENT_LEN,
+            neural_memory_batch_size=NEURAL_MEM_BATCH_SIZE,
+            neural_mem_gate_attn_output=NEURAL_MEM_GATE_ATTN_OUTPUT,
+            neural_mem_weight_residual=NEURAL_MEM_WEIGHT_RESIDUAL,
+            neural_memory_qkv_receives_diff_views=NEURAL_MEM_QKV_RECEIVES_DIFF_VIEW,
+            use_flex_attn=USE_FLEX_ATTN,
+            sliding_window_attn=SLIDING_WINDOWS,
+            neural_memory_model=neural_memory_model,
+            neural_memory_kwargs=dict(
+                dim_head=64,
+                heads=4,
+                attn_pool_chunks=STORE_ATTN_POOL_CHUNKS,
+                qk_rmsnorm=NEURAL_MEM_QK_NORM,
+                momentum=NEURAL_MEM_MOMENTUM,
+                store_memory_loss_fn=loss_fn,
+                momentum_order=NEURAL_MEM_MOMENTUM_ORDER,
+                default_step_transform_max_lr=NEURAL_MEM_MAX_LR,
+                use_accelerated_scan=USE_ACCELERATED_SCAN,
+                per_parameter_lr_modulation=MEMORY_MODEL_PER_LAYER_LEARNED_LR,
+                spectral_norm_surprises=NEURAL_MEM_SPEC_NORM_SURPRISES
+            )
+        )
     
     # Create main model
-    model = MemoryAsContextTransformer(
-        num_tokens=tokenizer.vocab_size,
-        dim=384,
-        depth=8,
-        segment_len=WINDOW_SIZE,
-        num_persist_mem_tokens=NUM_PERSIST_MEM,
-        num_longterm_mem_tokens=NUM_LONGTERM_MEM,
-        neural_memory_layers=NEURAL_MEM_LAYERS,
-        neural_memory_segment_len=NEURAL_MEM_SEGMENT_LEN,
-        neural_memory_batch_size=NEURAL_MEM_BATCH_SIZE,
-        neural_mem_gate_attn_output=NEURAL_MEM_GATE_ATTN_OUTPUT,
-        neural_mem_weight_residual=NEURAL_MEM_WEIGHT_RESIDUAL,
-        neural_memory_qkv_receives_diff_views=NEURAL_MEM_QKV_RECEIVES_DIFF_VIEW,
-        use_flex_attn=USE_FLEX_ATTN,
-        sliding_window_attn=SLIDING_WINDOWS,
-        neural_memory_model=neural_memory_model,
-        neural_memory_kwargs=dict(
-            dim_head=64,
-            heads=4,
-            attn_pool_chunks=STORE_ATTN_POOL_CHUNKS,
-            qk_rmsnorm=NEURAL_MEM_QK_NORM,
-            momentum=NEURAL_MEM_MOMENTUM,
-            store_memory_loss_fn=loss_fn,
-            momentum_order=NEURAL_MEM_MOMENTUM_ORDER,
-            default_step_transform_max_lr=NEURAL_MEM_MAX_LR,
-            use_accelerated_scan=USE_ACCELERATED_SCAN,
-            per_parameter_lr_modulation=MEMORY_MODEL_PER_LAYER_LEARNED_LR,
-            spectral_norm_surprises=NEURAL_MEM_SPEC_NORM_SURPRISES
-        )
-    )
+    model = build_model()
     
     print("Applying FSDP scalar parameter fix...")
     for name, param in model.named_parameters():
         if param.dim() == 0:
             # 将 0维 scalar 变为 1维 vector
             param.data = param.data.unsqueeze(0)
-            print(f" -> Reshaped scalar param '{name}' from [] to [1]")
+            #print(f" -> Reshaped scalar param '{name}' from [] to [1]")
+    
+    if accelerator.is_main_process:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+        print(f"\n{'='*40}")
+        print(f"Model Statistics")
+        print(f"{'='*40}")
+        print(f"Total Parameters:     {total_params:,} ({total_params/1e6:.2f}M)")
+        print(f"Trainable Parameters: {trainable_params:,} ({trainable_params/1e6:.2f}M)")
+        print(f"{'='*40}\n")
     
     # Create optimizer
     optimizer = AdoptAtan2(model.parameters(), lr=LEARNING_RATE)
@@ -334,7 +355,14 @@ def main():
     model, optimizer, train_loader, val_loader = accelerator.prepare(
         model, optimizer, train_loader, val_loader
     )
+    batches_per_epoch = len(train_loader)
+    NUM_BATCHES = batches_per_epoch * NUM_EPOCHS
     
+    if accelerator.is_main_process:
+        print(f"Dataset Size (Batches per Epoch): {batches_per_epoch}")
+        print(f"Target Epochs: {NUM_EPOCHS}")
+        print(f"Calculated Total Batches (NUM_BATCHES): {NUM_BATCHES}")
+        
     # Create checkpoint directory
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     
@@ -346,6 +374,7 @@ def main():
    
     if accelerator.is_main_process:
         print(f"Starting training...\nTotal training steps: {total_training_steps}")
+        
     
     for batch_idx in range(NUM_BATCHES):
         model.train()
@@ -374,6 +403,7 @@ def main():
                 percent = (global_step / total_training_steps) * 100
                 if accelerator.is_main_process:
                     print(f"Step {global_step}/{total_training_steps} ({percent:.2f}%) | Training Loss: {loss_value:.4f}")
+                    accelerator.log({"train_loss": loss_value}, step=global_step)
             
             # Validation
             if global_step % LOG_EVERY == 0:
@@ -384,36 +414,49 @@ def main():
                     val_loss_value = accelerator.gather(val_loss).mean().item()
                     if accelerator.is_main_process:
                         print(f"Step {global_step}/{total_training_steps} | Validation Loss: {val_loss_value:.4f}")
+                        accelerator.log({"val_loss": val_loss_value}, step=global_step)
             
             # Save checkpoint every SAVE_EVERY steps
             if global_step % SAVE_EVERY == 0:
-                if accelerator.is_main_process:
-                    checkpoint_path = Path(CHECKPOINT_DIR) / f"checkpoint-{global_step}"
-                    checkpoint_path.mkdir(parents=True, exist_ok=True)
-                    
-                    # Save model
-                    unwrapped_model = accelerator.unwrap_model(model)
-                    accelerator.save(
-                        {
-                            "model": unwrapped_model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "global_step": global_step,
-                        },
-                        checkpoint_path / "model.pt"
-                    )
-                    
-                    print(f"Checkpoint saved at step {global_step}")
-                    
-                    # Cleanup old checkpoints
-                    cleanup_old_checkpoints(CHECKPOINT_DIR, MAX_CHECKPOINTS)
-                
                 accelerator.wait_for_everyone()
+                
+                # 2. 定义保存路径
+                checkpoint_path = Path(CHECKPOINT_DIR) / f"checkpoint-{global_step}"
+                
+                # 3. 定义保存函数 (避免重复写代码)
+                def save_checkpoint(state_dict_to_save):
+                    if accelerator.is_main_process:
+                        checkpoint_path.mkdir(parents=True, exist_ok=True)
+                        print(f"Saving checkpoint to {checkpoint_path}...")
+                        
+                        # 保存模型权重
+                        torch.save(
+                           state_dict_to_save,
+                            checkpoint_path / "model.pt"
+                        )
+                        print(f"Checkpoint saved.")
+                        
+                        # 清理旧检查点
+                        cleanup_old_checkpoints(CHECKPOINT_DIR, MAX_CHECKPOINTS)
+
+                # 4. 根据分布式类型执行不同的收集策略
+                # FSDP 情况下，直接对 wrapped model 使用 accelerator.get_state_dict
+                if accelerator.distributed_type == DistributedType.FSDP:
+                    state_dict_to_save = accelerator.get_state_dict(model)
+                    if accelerator.is_main_process:
+                        save_checkpoint(state_dict_to_save)
+                else:
+                    # === 普通 DDP / 单卡模式 ===
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    if accelerator.is_main_process:
+                        save_checkpoint(unwrapped_model.state_dict())
             
+            accelerator.wait_for_everyone()
             # Generate samples
             if SHOULD_GENERATE and global_step % GENERATE_EVERY == 0:
                 
-                def run_generation_task():
-                    model.eval()
+                def run_generation_task(model_for_gen):
+                    model_for_gen.eval()
                     with torch.no_grad():
                         # Random sample from validation set
                         rand_idx = random.randint(0, len(val_ds) - 1)
@@ -427,9 +470,7 @@ def main():
                         print('*' * 60)
                         
                         # Generate
-                        # 注意：在 summon_full_params 上下文中，unwrap 后的模型参数是完整的 2D 矩阵
-                        unwrapped_model = accelerator.unwrap_model(model)
-                        sample = unwrapped_model.sample(
+                        sample = model_for_gen.sample(
                             inp[None, ...].to(accelerator.device), 
                             GENERATE_LENGTH, 
                             use_cache=USE_FAST_INFERENCE
@@ -438,19 +479,22 @@ def main():
                         print(f"Generated: {output_str}")
                         print('='*60 + "\n")
 
-               
                 if accelerator.distributed_type == DistributedType.FSDP:
-                    
-                    with FSDP.summon_full_params(model, writeback=False, rank0_only=True):
-                        if accelerator.is_main_process:
-                            run_generation_task()
-                else:
-                    
+                    state_dict = accelerator.get_state_dict(model)
                     if accelerator.is_main_process:
-                        run_generation_task()
+                        gen_model = build_model().to(accelerator.device)
+                        gen_model.load_state_dict(state_dict)
+                        run_generation_task(gen_model)
+                        del gen_model
+                        torch.cuda.empty_cache()
+                else:
+                    if accelerator.is_main_process:
+                        gen_model = accelerator.unwrap_model(model)
+                        run_generation_task(gen_model)
     
     if accelerator.is_main_process:
         print("Training completed!")
+        accelerator.end_training()
 
 if __name__ == "__main__":
     main()
