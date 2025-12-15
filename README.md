@@ -137,4 +137,4 @@ For video generation and physical simulation tasks, the LRB addresses critical c
 
 For any questions, discussions, or inquiries regarding the implementation of the Latent Reasoning Block or the Titans World Model architecture, please feel free to reach out:
 
-**[Moses**: [moseshu25@gmail.com]
+**[Moses]**: [moseshu25@gmail.com]
