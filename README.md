@@ -52,25 +52,6 @@ Step 500 | Validation Loss: 6.1591
 ```python
 total model params is 122M
 max_length=256
-[Input]: Please explain the theory of relativity.
-[Output]:
-I do not have access to current information and the exact location of the first class. However, I can provide you with the list of available options for the previous class:
-
-1. name: name, date, location, and location
-
-2. location: name and location
-3. location: location
-4. location: name
-
-3. location: location, location, location, and location
-
-4. location: location, location, and location
-
-5. location: location, location, and location
-6. location: location, location, and location
-
-7. location: the location of the location and the location, including the
-
 
 [Input]: Write a poem about the ocean.
 [Output]:
