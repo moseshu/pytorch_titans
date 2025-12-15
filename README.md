@@ -102,7 +102,7 @@ A masterpiece of nature
 
 #### 🧠 Latent Reasoning Block: Bridging Memory Retrieval and World Simulation
 
-In the standard Titans architecture, Neural Memory is responsible for compressing historical context into weights and retrieving relevant information based on the current query. However, mere **retrieval** is not equivalent to **reasoning**. To realize the vision of a **World Model** (as proposed by Yann LeCun), where a model must not only remember the past but also simulate the future, we introduce the **Latent Reasoning Block (LRB)**.
+In the standard Titans architecture, Neural Memory is responsible for compressing historical context into weights and retrieving relevant information based on the current query. However, mere **retrieval** is not equivalent to **reasoning**. To realize the vision of a **World Model** , where a model must not only remember the past but also simulate the future, I introduce the **Latent Reasoning Block (LRB)**.
 
 ##### 1. Motivation: System 1 vs. System 2
 I conceptualize the Neural Memory in Titans as **System 1 (Intuition)**, which rapidly retrieves historical patterns (e.g., "objects generally fall down"). The Latent Reasoning Block acts as **System 2 (Reasoning)**, performing deep, non-linear computations in the latent space (e.g., "calculating the exact pixel coordinates of the falling object based on gravity and velocity").
