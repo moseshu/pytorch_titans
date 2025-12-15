@@ -7,13 +7,14 @@ import torch
 from torch.utils.data import DataLoader
 from datasets import load_dataset, concatenate_datasets, Dataset
 from transformers import MistralCommonTokenizer
-from accelerate import Accelerator
+from accelerate import Accelerator,InitProcessGroupKwargs
 from accelerate.utils import DistributedDataParallelKwargs
 from adam_atan2_pytorch import AdoptAtan2
 from accelerate.utils import DistributedType
 from memory_models import MemoryMLP, MemoryAttention
 from mac_transformer import MemoryAsContextTransformer
 from accelerate.utils import DistributedType
+from datetime import timedelta
 
 
 # ==================== Configuration ====================
@@ -55,14 +56,14 @@ NEURAL_MEM_SPEC_NORM_SURPRISES = True
 DATA_DIR = "/workspace/llama/data/processeddata"
 CACHE_DIR = "/workspace/titans/.datacathe"
 TOKENIZER_PATH = "/workspace/llama/weights/mistralai/Ministral-3-14B-Instruct-2512"
-CHECKPOINT_DIR = "./checkpoints"
+CHECKPOINT_DIR = "./checkpoints-reasoning"
 
 # Performance
 USE_ACCELERATED_SCAN = True
 USE_FLEX_ATTN = True
 USE_FAST_INFERENCE = False
 NUM_PROC = 4
-BLOCK_SIZE = 2048
+BLOCK_SIZE = 4096
 
 # ==================== Helper Functions ====================
 def cycle(loader):
@@ -215,10 +216,11 @@ def tokenize_and_chunk_data(raw_datasets, tokenizer):
 def main():
     # Initialize Accelerator with DDP (instead of FSDP to avoid scalar parameter issue)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    process_group_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=60))
     accelerator = Accelerator(
         gradient_accumulation_steps=GRADIENT_ACCUMULATE_EVERY,
         mixed_precision="bf16",  # Use bf16 for better stability
-        kwargs_handlers=[ddp_kwargs],
+        kwargs_handlers=[ddp_kwargs,process_group_kwargs],
         log_with="tensorboard",
         project_dir="./logs" 
     )
@@ -250,6 +252,7 @@ def main():
     
     # Set format and split
     lm_datasets.set_format(type="torch", columns=["input_ids", "labels"])
+    lm_datasets = lm_datasets.shuffle(seed=42)
     split_dataset = lm_datasets.train_test_split(test_size=0.05)
     train_ds = split_dataset["train"]
     val_ds = split_dataset["test"]
@@ -264,7 +267,7 @@ def main():
         batch_size=BATCH_SIZE, 
         shuffle=True, 
         collate_fn=collate_fn,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True
     )
     
