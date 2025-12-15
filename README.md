@@ -97,3 +97,44 @@ The landscape is a sight to behold,
 As if in awe of the beauty,
 A masterpiece of nature
 ```
+
+# Latent Reasoning for State Transition
+
+#### 🧠 Latent Reasoning Block: Bridging Memory Retrieval and World Simulation
+
+In the standard Titans architecture, Neural Memory is responsible for compressing historical context into weights and retrieving relevant information based on the current query. However, mere **retrieval** is not equivalent to **reasoning**. To realize the vision of a **World Model** (as proposed by Yann LeCun), where a model must not only remember the past but also simulate the future, we introduce the **Latent Reasoning Block (LRB)**.
+
+##### 1. Motivation: System 1 vs. System 2
+I conceptualize the Neural Memory in Titans as **System 1 (Intuition)**, which rapidly retrieves historical patterns (e.g., "objects generally fall down"). The Latent Reasoning Block acts as **System 2 (Reasoning)**, performing deep, non-linear computations in the latent space (e.g., "calculating the exact pixel coordinates of the falling object based on gravity and velocity").
+
+##### 2. Mechanism
+The LRB is positioned after the Neural Memory retrieval and before the attention mechanism. It integrates two distinct information streams:
+1.  **Current Observation ($x_t$):** The input from the residual stream at the current time step.
+2.  **Retrieved Dynamics ($r_t$):** The memory vector retrieved from the Neural Memory, encoding physical laws and long-term context.
+
+The inference process is formalized as:
+
+$$
+h_{state} = x_t + r_t
+$$
+$$
+h_{reasoned} = \mathcal{F}_{\theta}(h_{state})
+$$
+$$
+y_t = \sigma(W_g [x_t; h_{reasoned}]) \odot h_{reasoned} + (1 - \sigma(W_g [x_t; h_{reasoned}])) \odot x_t
+$$
+
+Where $\mathcal{F}_{\theta}$ represents a deep Multi-Layer Perceptron (MLP) with SwiGLU activation, responsible for simulating state transitions. The gating mechanism ($\sigma$) allows the model to dynamically balance between raw observation (for static scenes) and reasoned simulation (for complex dynamics).
+
+##### 3. Implications for World Modeling
+For video generation and physical simulation tasks, the LRB addresses critical challenges:
+*   **Physical Consistency:** While Neural Memory retains the *attributes* of objects (identity, material), the Reasoning Block calculates their *interactions* (collision, deformation).
+*   **Temporal Coherence:** By explicitly processing the retrieved history alongside the current state, the module ensures that generated frames adhere to causal laws rather than just visual similarity.
+
+---
+
+### 📧 Contact & Correspondence
+
+For any questions, discussions, or inquiries regarding the implementation of the Latent Reasoning Block or the Titans World Model architecture, please feel free to reach out:
+
+**[Moses**: [moseshu25@gmail.com]
