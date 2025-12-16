@@ -140,6 +140,7 @@ $$
 The final "pondered" state 
 
 $h_t^{\text{final}}$ is a weighted sum of all intermediate states:
+
 $$
 h_t^{\text{final}} = \sum_{k=1}^{K} w_t^{(k)} h_t^{(k)} + R_t^{(K)} h_t^{(K)}
 $$
