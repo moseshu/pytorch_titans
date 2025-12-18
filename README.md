@@ -13,36 +13,74 @@ sh launch_script.sh
 
 ### Loss
 ```python
-Step 20 | Training Loss: 9.9755
-Step 20 | Validation Loss: 9.8037
-Step 40 | Training Loss: 8.1710
-Step 40 | Validation Loss: 8.0368
-Step 60 | Training Loss: 7.5819
-Step 60 | Validation Loss: 7.5379
-Step 80 | Training Loss: 7.5585
-Step 80 | Validation Loss: 7.5315
-Step 100 | Training Loss: 7.5574
-Step 100 | Validation Loss: 7.5123
-Step 120 | Training Loss: 7.4792
-Step 120 | Validation Loss: 7.5018
-Step 140 | Training Loss: 7.5203
-Step 140 | Validation Loss: 7.4147
-Step 160 | Training Loss: 7.4831
-Step 160 | Validation Loss: 7.5462
-Step 180 | Training Loss: 7.4838
-Step 180 | Validation Loss: 7.4714
-Step 200 | Training Loss: 7.3697
-Step 200 | Validation Loss: 7.4896
+Step 60/26735 (0.22%) | Training Loss: 6.0509 | LM: 6.0509 | WM: 0.0000 | Gate: 0.000
+Step 60/26735 | Validation Loss: 6.4431 | LM: 6.4431 | WM: 0.0000 | Gate: 0.000
+Step 80/26735 (0.30%) | Training Loss: 6.1801 | LM: 6.1801 | WM: 0.0000 | Gate: 0.000
+Step 80/26735 | Validation Loss: 6.0647 | LM: 6.0647 | WM: 0.0000 | Gate: 0.000
+Step 100/26735 (0.37%) | Training Loss: 6.0434 | LM: 6.0434 | WM: 0.0000 | Gate: 0.000
+Step 100/26735 | Validation Loss: 6.5956 | LM: 6.5956 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-100...
+Checkpoint saved.
+Removed old checkpoint: checkpoints/checkpoint-100
+Step 120/26735 (0.45%) | Training Loss: 6.3664 | LM: 6.3664 | WM: 0.0000 | Gate: 0.000
+Step 120/26735 | Validation Loss: 5.8169 | LM: 5.8169 | WM: 0.0000 | Gate: 0.000
+Step 140/26735 (0.52%) | Training Loss: 6.1446 | LM: 6.1446 | WM: 0.0000 | Gate: 0.000
+Step 140/26735 | Validation Loss: 6.8763 | LM: 6.8763 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-150...
+Checkpoint saved.
+Removed old checkpoint: checkpoints/checkpoint-150
+Step 160/26735 (0.60%) | Training Loss: 6.3173 | LM: 6.3173 | WM: 0.0000 | Gate: 0.000
+Step 160/26735 | Validation Loss: 5.8490 | LM: 5.8490 | WM: 0.0000 | Gate: 0.000
+Step 180/26735 (0.67%) | Training Loss: 5.9880 | LM: 5.9880 | WM: 0.0000 | Gate: 0.000
+Step 180/26735 | Validation Loss: 6.5561 | LM: 6.5561 | WM: 0.0000 | Gate: 0.000
+Step 200/26735 (0.75%) | Training Loss: 5.8325 | LM: 5.8325 | WM: 0.0000 | Gate: 0.000
+Step 200/26735 | Validation Loss: 5.8982 | LM: 5.8982 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-200...
+Checkpoint saved.
+Removed old checkpoint: checkpoints/checkpoint-200
+Step 220/26735 (0.82%) | Training Loss: 5.7310 | LM: 5.7310 | WM: 0.0000 | Gate: 0.000
+Step 220/26735 | Validation Loss: 6.2626 | LM: 6.2626 | WM: 0.0000 | Gate: 0.000
+Step 240/26735 (0.90%) | Training Loss: 6.2902 | LM: 6.2902 | WM: 0.0000 | Gate: 0.000
+Step 240/26735 | Validation Loss: 6.1724 | LM: 6.1724 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-250...
+Checkpoint saved.
+Removed old checkpoint: checkpoints/checkpoint-250
+Step 260/26735 (0.97%) | Training Loss: 6.3755 | LM: 6.3755 | WM: 0.0000 | Gate: 0.000
+Step 260/26735 | Validation Loss: 5.9196 | LM: 5.9196 | WM: 0.0000 | Gate: 0.000
+Step 280/26735 (1.05%) | Training Loss: 6.1827 | LM: 6.1827 | WM: 0.0000 | Gate: 0.000
+Step 280/26735 | Validation Loss: 6.0919 | LM: 6.0919 | WM: 0.0000 | Gate: 0.000
+Step 300/26735 (1.12%) | Training Loss: 5.7777 | LM: 5.7777 | WM: 0.0000 | Gate: 0.000
+Step 300/26735 | Validation Loss: 5.9194 | LM: 5.9194 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-300...
 ....
-Step 440 | Training Loss: 6.4870
-Step 440 | Validation Loss: 6.5944
-Checkpoint saved at step 450
-Step 460 | Training Loss: 6.2658
-Step 460 | Validation Loss: 6.3194
-Step 480 | Training Loss: 6.3541
-Step 480 | Validation Loss: 6.2988
-Step 500 | Training Loss: 6.2601
-Step 500 | Validation Loss: 6.1591
+Removed old checkpoint: checkpoints/checkpoint-4250
+Step 4260/26735 (15.93%) | Training Loss: 1.5031 | LM: 1.5031 | WM: 0.0000 | Gate: 0.000
+Step 4260/26735 | Validation Loss: 1.6541 | LM: 1.6541 | WM: 0.0000 | Gate: 0.000
+Step 4280/26735 (16.01%) | Training Loss: 1.9408 | LM: 1.9408 | WM: 0.0000 | Gate: 0.000
+Step 4280/26735 | Validation Loss: 1.4853 | LM: 1.4853 | WM: 0.0000 | Gate: 0.000
+Step 4300/26735 (16.08%) | Training Loss: 2.0216 | LM: 2.0216 | WM: 0.0000 | Gate: 0.000
+Step 4300/26735 | Validation Loss: 2.0111 | LM: 2.0111 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-4300...
+Checkpoint saved.
+Removed old checkpoint: checkpoints/checkpoint-4300
+Step 4320/26735 (16.16%) | Training Loss: 2.0457 | LM: 2.0457 | WM: 0.0000 | Gate: 0.000
+Step 4320/26735 | Validation Loss: 1.5575 | LM: 1.5575 | WM: 0.0000 | Gate: 0.000
+Step 4340/26735 (16.23%) | Training Loss: 1.7154 | LM: 1.7154 | WM: 0.0000 | Gate: 0.000
+Step 4340/26735 | Validation Loss: 1.7498 | LM: 1.7498 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-4350...
+Checkpoint saved.
+Removed old checkpoint: checkpoints/checkpoint-4350
+Step 4360/26735 (16.31%) | Training Loss: 1.7499 | LM: 1.7499 | WM: 0.0000 | Gate: 0.000
+Step 4360/26735 | Validation Loss: 1.9553 | LM: 1.9553 | WM: 0.0000 | Gate: 0.000
+Step 4380/26735 (16.38%) | Training Loss: 1.7013 | LM: 1.7013 | WM: 0.0000 | Gate: 0.000
+Step 4380/26735 | Validation Loss: 1.7171 | LM: 1.7171 | WM: 0.0000 | Gate: 0.000
+Step 4400/26735 (16.46%) | Training Loss: 1.7304 | LM: 1.7304 | WM: 0.0000 | Gate: 0.000
+Step 4400/26735 | Validation Loss: 1.4374 | LM: 1.4374 | WM: 0.0000 | Gate: 0.000
+Saving checkpoint to checkpoints/checkpoint-4400...
+Checkpoint saved.
+Removed old checkpoint: checkpoints/checkpoint-4400
+Step 4420/26735 (16.53%) | Training Loss: 1.6774 | LM: 1.6774 | WM: 0.0000 | Gate: 0.000
+Step 4420/26735 | Validation Loss: 1.6489 | LM: 1.6489 | WM: 0.0000 | Gate: 0.000
 
 ```
 
