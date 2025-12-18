@@ -5,6 +5,7 @@ from pathlib import Path
 from itertools import chain
 import torch
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from datasets import load_dataset, concatenate_datasets, Dataset
 from transformers import MistralCommonTokenizer
 from accelerate import Accelerator,InitProcessGroupKwargs
@@ -15,7 +16,6 @@ from memory_models import MemoryMLP, MemoryAttention
 from mac_transformer import MemoryAsContextTransformer
 from accelerate.utils import DistributedType
 from datetime import timedelta
-
 
 # ==================== Configuration ====================
 # NUM_BATCHES = int(1e5)
@@ -28,7 +28,7 @@ SAVE_EVERY = 50  # Save checkpoint every 500 steps
 MAX_CHECKPOINTS = 3  # Keep only last 3 checkpoints
 GENERATE_EVERY = 500
 PRIME_LENGTH = 100
-GENERATE_LENGTH = 4096
+GENERATE_LENGTH = 2048
 SHOULD_GENERATE = False
 
 # Neural memory related
@@ -52,11 +52,26 @@ NEURAL_MEM_WEIGHT_RESIDUAL = True
 NEURAL_MEM_QKV_RECEIVES_DIFF_VIEW = True
 NEURAL_MEM_SPEC_NORM_SURPRISES = True
 
+# Latent reasoning / world model
+USE_LATENT_REASONING = False
+REASONING_DEPTH = 2
+REASONING_EXPANSION = 2.0
+REASONING_INNER_STEPS = 2
+REASONING_FUTURE_HORIZON = 3
+REASONING_LOSS_WEIGHT = 0.1
+REASONING_EVAL_COLLECT = True
+REASONING_USE_INNER_ATTN = True
+REASONING_INNER_ATTN_HEADS = 4
+REASONING_INNER_ATTN_DIM_HEAD = 32
+REASONING_USE_ACT = False
+REASONING_ACT_EPSILON = 1e-2
+REASONING_ACT_LOSS_WEIGHT = 0.01
+
 # Data paths
 DATA_DIR = "/workspace/llama/data/processeddata"
 CACHE_DIR = "/workspace/titans/.datacathe"
 TOKENIZER_PATH = "/workspace/llama/weights/mistralai/Ministral-3-14B-Instruct-2512"
-CHECKPOINT_DIR = "./checkpoints-reasoning"
+CHECKPOINT_DIR = "./checkpoints"
 
 # Performance
 USE_ACCELERATED_SCAN = True
@@ -267,7 +282,7 @@ def main():
         batch_size=BATCH_SIZE, 
         shuffle=True, 
         collate_fn=collate_fn,
-        num_workers=4,
+        num_workers=2,
         pin_memory=True
     )
     
@@ -301,7 +316,7 @@ def main():
 
         return MemoryAsContextTransformer(
             num_tokens=tokenizer.vocab_size,
-            dim=384,
+            dim=1024,
             depth=8,
             segment_len=WINDOW_SIZE,
             num_persist_mem_tokens=NUM_PERSIST_MEM,
@@ -327,6 +342,21 @@ def main():
                 use_accelerated_scan=USE_ACCELERATED_SCAN,
                 per_parameter_lr_modulation=MEMORY_MODEL_PER_LAYER_LEARNED_LR,
                 spectral_norm_surprises=NEURAL_MEM_SPEC_NORM_SURPRISES
+            ),
+            latent_reasoning=USE_LATENT_REASONING,
+            reasoning_loss_weight=REASONING_LOSS_WEIGHT,
+            latent_reasoning_eval_targets=REASONING_EVAL_COLLECT,
+            latent_reasoning_kwargs=dict(
+                depth=REASONING_DEPTH,
+                expansion_factor=REASONING_EXPANSION,
+                inner_steps=REASONING_INNER_STEPS,
+                future_horizon=REASONING_FUTURE_HORIZON,
+                use_inner_attention=REASONING_USE_INNER_ATTN,
+                inner_attn_heads=REASONING_INNER_ATTN_HEADS,
+                inner_attn_dim_head=REASONING_INNER_ATTN_DIM_HEAD,
+                use_act=REASONING_USE_ACT,
+                act_epsilon=REASONING_ACT_EPSILON,
+                act_loss_weight=REASONING_ACT_LOSS_WEIGHT
             )
         )
     
@@ -338,7 +368,7 @@ def main():
         if param.dim() == 0:
             # 将 0维 scalar 变为 1维 vector
             param.data = param.data.unsqueeze(0)
-            #print(f" -> Reshaped scalar param '{name}' from [] to [1]")
+            print(f" -> Reshaped scalar param '{name}' from [] to [1]")
     
     if accelerator.is_main_process:
         total_params = sum(p.numel() for p in model.parameters())
@@ -379,13 +409,27 @@ def main():
         print(f"Starting training...\nTotal training steps: {total_training_steps}")
         
     
+    last_train_breakdown = None
+
     for batch_idx in range(NUM_BATCHES):
         model.train()
+        step_breakdown = None
         
         # Training step with gradient accumulation
         with accelerator.accumulate(model):
             batch = next(train_iter)
-            loss = model(batch, return_loss=True)
+            outputs = model(
+                batch,
+                return_loss=True,
+                return_loss_breakdown=True
+            )
+
+            if isinstance(outputs, tuple):
+                loss, step_breakdown = outputs
+            else:
+                loss = outputs
+                step_breakdown = None
+
             accelerator.backward(loss)
             
             # Gradient clipping
@@ -398,26 +442,96 @@ def main():
         # Increment global step after accumulation
         if accelerator.sync_gradients:
             global_step += 1
+            last_train_breakdown = step_breakdown
             
             # Log every LOG_EVERY steps
             if global_step % LOG_EVERY == 0:
                 # Gather loss from all processes
                 loss_value = accelerator.gather(loss).mean().item()
                 percent = (global_step / total_training_steps) * 100
+                train_log_payload = {"train_loss": loss_value}
+
+                if last_train_breakdown is not None:
+                    train_lm = accelerator.gather(last_train_breakdown["lm"]).mean().item()
+                    train_world = accelerator.gather(last_train_breakdown["world_model"]).mean().item()
+                    train_log_payload.update(
+                        train_lm=train_lm,
+                        train_world_model=train_world
+                    )
+
+                    extra_breakdown_map = {
+                        "world_model_raw": "train_world_model_raw",
+                        "world_model_rollout_raw": "train_world_model_rollout_raw",
+                        "world_model_act_raw": "train_world_model_act_raw",
+                        "reasoning_gate_mean": "train_reasoning_gate_mean",
+                        "reasoning_thought_norm": "train_reasoning_thought_norm",
+                        "reasoning_future_pred_norm": "train_reasoning_future_pred_norm",
+                        "reasoning_future_target_norm": "train_reasoning_future_target_norm",
+                    }
+
+                    for key, logged_key in extra_breakdown_map.items():
+                        if key in last_train_breakdown:
+                            train_log_payload[logged_key] = accelerator.gather(last_train_breakdown[key]).mean().item()
+
                 if accelerator.is_main_process:
-                    print(f"Step {global_step}/{total_training_steps} ({percent:.2f}%) | Training Loss: {loss_value:.4f}")
-                    accelerator.log({"train_loss": loss_value}, step=global_step)
+                    log_msg = f"Step {global_step}/{total_training_steps} ({percent:.2f}%) | Training Loss: {loss_value:.4f}"
+                    if "train_lm" in train_log_payload:
+                        log_msg += f" | LM: {train_log_payload['train_lm']:.4f} | WM: {train_log_payload['train_world_model']:.4f}"
+                    if "train_reasoning_gate_mean" in train_log_payload:
+                        log_msg += f" | Gate: {train_log_payload['train_reasoning_gate_mean']:.3f}"
+                    print(log_msg)
+                    accelerator.log(train_log_payload, step=global_step)
             
             # Validation
             if global_step % LOG_EVERY == 0:
                 model.eval()
                 with torch.no_grad():
                     val_batch = next(val_iter)
-                    val_loss = model(val_batch, return_loss=True)
+                    val_outputs = model(
+                        val_batch,
+                        return_loss=True,
+                        return_loss_breakdown=True
+                    )
+
+                    if isinstance(val_outputs, tuple):
+                        val_loss, val_breakdown = val_outputs
+                    else:
+                        val_loss = val_outputs
+                        val_breakdown = None
+
                     val_loss_value = accelerator.gather(val_loss).mean().item()
+                    val_log_payload = {"val_loss": val_loss_value}
+
+                    if val_breakdown is not None:
+                        val_lm = accelerator.gather(val_breakdown["lm"]).mean().item()
+                        val_world = accelerator.gather(val_breakdown["world_model"]).mean().item()
+                        val_log_payload.update(
+                            val_lm=val_lm,
+                            val_world_model=val_world
+                        )
+
+                        extra_breakdown_map = {
+                            "world_model_raw": "val_world_model_raw",
+                            "world_model_rollout_raw": "val_world_model_rollout_raw",
+                            "world_model_act_raw": "val_world_model_act_raw",
+                            "reasoning_gate_mean": "val_reasoning_gate_mean",
+                            "reasoning_thought_norm": "val_reasoning_thought_norm",
+                            "reasoning_future_pred_norm": "val_reasoning_future_pred_norm",
+                            "reasoning_future_target_norm": "val_reasoning_future_target_norm",
+                        }
+
+                        for key, logged_key in extra_breakdown_map.items():
+                            if key in val_breakdown:
+                                val_log_payload[logged_key] = accelerator.gather(val_breakdown[key]).mean().item()
+
                     if accelerator.is_main_process:
-                        print(f"Step {global_step}/{total_training_steps} | Validation Loss: {val_loss_value:.4f}")
-                        accelerator.log({"val_loss": val_loss_value}, step=global_step)
+                        val_msg = f"Step {global_step}/{total_training_steps} | Validation Loss: {val_loss_value:.4f}"
+                        if "val_lm" in val_log_payload:
+                            val_msg += f" | LM: {val_log_payload['val_lm']:.4f} | WM: {val_log_payload['val_world_model']:.4f}"
+                        if "val_reasoning_gate_mean" in val_log_payload:
+                            val_msg += f" | Gate: {val_log_payload['val_reasoning_gate_mean']:.3f}"
+                        print(val_msg)
+                        accelerator.log(val_log_payload, step=global_step)
             
             # Save checkpoint every SAVE_EVERY steps
             if global_step % SAVE_EVERY == 0:
