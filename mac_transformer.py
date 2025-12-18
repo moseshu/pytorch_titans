@@ -467,6 +467,242 @@ class SegmentedAttention(Module):
 
         return out, AttnIntermediates(orig_v, next_cache)
 
+
+    
+import torch
+from torch import nn
+import torch.nn.functional as F
+
+class LightweightLatentAttention(nn.Module):
+    def __init__(self, dim, heads = 4, dim_head = 32):
+        super().__init__()
+        inner_dim = heads * dim_head
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim, bias = False)
+
+    def forward(self, x):
+        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), (q, k, v))
+
+        sim = einsum(q, k, 'b h i d, b h j d -> b h i j') * self.scale
+        attn = sim.softmax(dim = -1)
+        out = einsum(attn, v, 'b h i j, b h j d -> b h i d')
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+
+class LatentReasoningBlock(nn.Module):
+    """
+    A light-weight latent world model that performs three operations:
+    1) inner-loop refinement of a thought state (System-2 style updates)
+    2) latent roll-outs that predict multiple future states
+    3) gating to decide how much of the deliberate state should influence the stream
+    """
+    def __init__(
+        self,
+        dim,
+        depth: int = 2,
+        expansion_factor: float = 2.,
+        inner_steps: int = 2,
+        future_horizon: int = 3,
+        use_inner_attention: bool = True,
+        inner_attn_heads: int = 4,
+        inner_attn_dim_head: int = 32,
+        use_act: bool = True,
+        act_epsilon: float = 1e-2,
+        act_loss_weight: float = 0.01
+    ):
+        super().__init__()
+        self.depth = depth
+        self.inner_steps = inner_steps
+        self.future_horizon = future_horizon
+        self.use_inner_attention = use_inner_attention
+        self.use_act = use_act and inner_steps > 0
+        self.act_epsilon = act_epsilon
+        self.act_loss_weight = act_loss_weight
+
+        hidden_dim = int(dim * expansion_factor)
+
+        self.reasoning_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, hidden_dim * 2),
+                GEGLU(),
+                nn.Linear(hidden_dim, dim)
+            ) for _ in range(depth)
+        ])
+
+        self.inner_norm = nn.LayerNorm(dim) if inner_steps > 0 else None
+
+        self.inner_cell = None
+        self.inner_attn = None
+        self.inner_attn_norm = None
+
+        if inner_steps > 0:
+            if use_inner_attention:
+                self.inner_attn_norm = nn.LayerNorm(dim)
+                self.inner_attn = LightweightLatentAttention(
+                    dim,
+                    heads = inner_attn_heads,
+                    dim_head = inner_attn_dim_head
+                )
+            else:
+                self.inner_cell = nn.GRUCell(dim, dim)
+
+        self.halt_proj = None
+        if self.use_act:
+            self.halt_proj = nn.Linear(dim, 1)
+
+        self.future_predictor = None
+        if future_horizon > 0:
+            self.future_predictor = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, dim * future_horizon)
+            )
+
+        self.gate = nn.Sequential(
+            nn.Linear(dim * 2, dim),
+            nn.Sigmoid()
+        )
+
+    def forward(
+        self,
+        current_input,
+        retrieved_memory,
+        future_targets = None,
+        future_target_mask = None
+    ):
+        """
+        current_input: 当前 residual stream 的内容 [B, N, D]
+        retrieved_memory: Neural Memory 返回的上下文 [B, N, D]
+        future_targets: 监督未来 latent 的 teacher 信号 [B, H, N, D]
+        future_target_mask: 哪些位置存在真实未来 [B, H, N]
+        """
+
+        # 合并输入得到初始思考状态
+        thought_state = current_input + retrieved_memory
+        scratchpad_states = []
+
+        # 多层非线性推理
+        for layer in self.reasoning_layers:
+            thought_state = thought_state + layer(thought_state)
+            scratchpad_states.append(thought_state)
+
+        # 内循环：在同一个时间步上反复思考
+        act_loss = None
+        if self.inner_steps > 0 and (exists(self.inner_cell) or exists(self.inner_attn)):
+            inner_state = thought_state
+            iterative_states = []
+            flat_dim = current_input.shape[-1]
+            gru_context = None
+
+            if exists(self.inner_cell):
+                gru_context = (current_input + retrieved_memory).reshape(-1, flat_dim)
+
+            if self.use_act:
+                batch, seq_len = inner_state.shape[:2]
+                device = inner_state.device
+                halting_prob = torch.zeros(batch, seq_len, device = device, dtype = inner_state.dtype)
+                updates_accum = torch.zeros_like(halting_prob)
+                running_mask = torch.ones_like(halting_prob, dtype = torch.bool)
+                accumulated_state = torch.zeros_like(inner_state)
+
+            for _ in range(self.inner_steps):
+                iterative_states.append(inner_state)
+
+                if exists(self.inner_attn):
+                    attn_in = self.inner_attn_norm(inner_state)
+                    next_state = inner_state + self.inner_attn(attn_in)
+                elif exists(self.inner_cell):
+                    state_flat = inner_state.reshape(-1, flat_dim)
+                    state_flat = self.inner_cell(gru_context, state_flat)
+                    next_state = state_flat.view_as(inner_state)
+                else:
+                    break
+
+                next_state = self.inner_norm(next_state)
+
+                if self.use_act:
+                    halt = torch.sigmoid(self.halt_proj(inner_state)).squeeze(-1)
+                    halt = halt * running_mask.float()
+                    new_halting = halting_prob + halt
+                    overflow = torch.clamp(new_halting - 1., min = 0.)
+                    halt_adjusted = halt - overflow
+                    halting_prob = halting_prob + halt_adjusted
+
+                    accumulated_state = accumulated_state + inner_state * halt_adjusted.unsqueeze(-1)
+                    updates_accum = updates_accum + running_mask.float()
+
+                    running_mask = halting_prob < (1. - self.act_epsilon)
+                    inner_state = torch.where(running_mask.unsqueeze(-1), next_state, inner_state)
+
+                    if not running_mask.any():
+                        break
+                else:
+                    inner_state = next_state
+
+            if self.use_act:
+                remainder = (1. - halting_prob).clamp(min = 0.)
+                accumulated_state = accumulated_state + inner_state * remainder.unsqueeze(-1)
+                ponder_cost = updates_accum + remainder
+                act_loss = ponder_cost.float().mean() * self.act_loss_weight
+                inner_state = accumulated_state
+
+            thought_state = inner_state
+            scratchpad_states.extend(iterative_states)
+
+        # 预测未来 latent
+        rollout_loss = None
+        future_preds = None
+
+        if exists(self.future_predictor) and (self.training or exists(future_targets)):
+            future_preds = self.future_predictor(thought_state)
+            future_preds = rearrange(
+                future_preds,
+                'b n (h d) -> b h n d',
+                h = self.future_horizon
+            )
+
+            if exists(future_targets):
+                rollout_loss = F.smooth_l1_loss(
+                    future_preds.float(),
+                    future_targets.float(),
+                    reduction = 'none'
+                )
+
+                if exists(future_target_mask):
+                    mask = future_target_mask.unsqueeze(-1).type_as(rollout_loss)
+                    mask = mask.expand_as(rollout_loss)
+                    rollout_loss = rollout_loss * mask
+                    denom = mask.sum().clamp(min = 1.)
+                    rollout_loss = rollout_loss.sum() / denom
+                else:
+                    rollout_loss = rollout_loss.mean()
+
+        scratchpad = None
+        if len(scratchpad_states) > 0:
+            scratchpad = torch.stack(scratchpad_states, dim = 1)
+
+        combined = torch.cat([current_input, thought_state], dim = -1)
+        g = self.gate(combined)
+        enhanced_state = g * thought_state + (1 - g) * current_input
+
+        return enhanced_state, {
+            'future_predictions': future_preds,
+            'rollout_loss': rollout_loss,
+            'scratchpad': scratchpad,
+            'act_loss': act_loss.float() if exists(act_loss) else None,
+            'gate_mean': g.detach().float().mean(),
+            'thought_norm': thought_state.detach().float().norm(dim = -1).mean(),
+            'future_pred_norm': future_preds.detach().float().norm(dim = -1).mean() if exists(future_preds) else None,
+            'future_target_norm': future_targets.detach().float().norm(dim = -1).mean() if exists(future_targets) else None
+        }
+    
+    
 # MAC transformer
 
 class MemoryAsContextTransformer(Module):
@@ -494,6 +730,10 @@ class MemoryAsContextTransformer(Module):
         use_flex_attn = False,
         sliding_window_attn = False,
         neural_mem_weight_residual = False,
+        latent_reasoning: bool = True,
+        latent_reasoning_kwargs: dict | None = None,
+        reasoning_loss_weight: float = 0.1,
+        latent_reasoning_eval_targets: bool = False,
         token_emb: Module | None = None,
     ):
         super().__init__()
@@ -502,9 +742,18 @@ class MemoryAsContextTransformer(Module):
             token_emb = nn.Embedding(num_tokens, dim)
 
         self.token_emb = token_emb
+        latent_reasoning_kwargs = default(latent_reasoning_kwargs, dict())
+
+        self.reasoning_module = None
+        self.reasoning_loss_weight = reasoning_loss_weight
+        self.reasoning_horizon = 0
+        self.reasoning_eval_targets = latent_reasoning_eval_targets
+
+        if latent_reasoning:
+            self.reasoning_module = LatentReasoningBlock(dim, **latent_reasoning_kwargs)
+            self.reasoning_horizon = latent_reasoning_kwargs.get('future_horizon', 0)
 
         # absolute positions
-
         self.axial_pos_emb = ContinuousAxialPositionalEmbedding(dim = dim, num_axial_dims = 2)
 
         # long term mem tokens
@@ -632,6 +881,47 @@ class MemoryAsContextTransformer(Module):
 
         segment_len, num_mem = self.segment_len, self.num_longterm_mem_tokens
         return ((seq_len - 1) // segment_len) * num_mem + seq_len
+
+    def _build_future_targets(self, states):
+        horizon = self.reasoning_horizon
+
+        if horizon <= 0:
+            return None, None
+
+        states = states.detach()
+        batch, seq_len, dim = states.shape
+        device, dtype = states.device, states.dtype
+
+        if self.num_longterm_mem_tokens > 0:
+            total_segment_len, segment_len = self.attn_window_size, self.segment_len
+            seq_idx = torch.arange(seq_len, device = device)
+            is_longterm = (seq_idx % total_segment_len) >= segment_len
+            base_mask = (~is_longterm).unsqueeze(0).expand(batch, -1)
+        else:
+            base_mask = torch.ones(batch, seq_len, device = device, dtype = torch.bool)
+
+        future_targets = []
+        future_masks = []
+
+        for step in range(1, horizon + 1):
+            future = torch.zeros(batch, seq_len, dim, device = device, dtype = dtype)
+            mask = base_mask.clone()
+
+            if step < seq_len:
+                future[:, :-step] = states[:, step:]
+                mask[:, :-step] = mask[:, :-step] & base_mask[:, step:]
+            else:
+                mask[:] = False
+
+            mask[:, -step:] = False
+
+            future_targets.append(future)
+            future_masks.append(mask)
+
+        future_targets = torch.stack(future_targets, dim = 1)
+        future_masks = torch.stack(future_masks, dim = 1)
+
+        return future_targets, future_masks
 
     @torch.no_grad()
     def sample(
@@ -778,6 +1068,14 @@ class MemoryAsContextTransformer(Module):
         # layers for the neural mem to select the qkv inputs from
 
         mem_input_layers = []
+        reasoning_aux_loss = None
+        reasoning_rollout_loss = None
+        reasoning_act_loss = None
+        reasoning_gate_mean = None
+        reasoning_thought_norm = None
+        reasoning_future_pred_norm = None
+        reasoning_future_target_norm = None
+        reasoning_stat_count = 0
 
         # when inferencing, only do one token at a time
 
@@ -818,13 +1116,55 @@ class MemoryAsContextTransformer(Module):
                     prev_weights = mem_weight_residual
                 )
 
+                context_to_add = retrieved
+
+                if exists(self.reasoning_module):
+                    future_targets = future_target_mask = None
+
+                    if (self.training or self.reasoning_eval_targets) and self.reasoning_horizon > 0:
+                        future_targets, future_target_mask = self._build_future_targets(mem_input)
+
+                    context_to_add, reasoning_info = self.reasoning_module(
+                        mem_input,
+                        retrieved,
+                        future_targets = future_targets,
+                        future_target_mask = future_target_mask
+                    )
+
+                    rollout_loss = reasoning_info.get('rollout_loss')
+                    act_loss = reasoning_info.get('act_loss')
+
+                    if exists(rollout_loss):
+                        reasoning_rollout_loss = rollout_loss if not exists(reasoning_rollout_loss) else (reasoning_rollout_loss + rollout_loss)
+                    if exists(act_loss):
+                        reasoning_act_loss = act_loss if not exists(reasoning_act_loss) else (reasoning_act_loss + act_loss)
+
+                    for aux_loss in (rollout_loss, act_loss):
+                        if exists(aux_loss):
+                            reasoning_aux_loss = aux_loss if not exists(reasoning_aux_loss) else (reasoning_aux_loss + aux_loss)
+
+                    gate_mean = reasoning_info.get('gate_mean')
+                    thought_norm = reasoning_info.get('thought_norm')
+                    future_pred_norm = reasoning_info.get('future_pred_norm')
+                    future_target_norm = reasoning_info.get('future_target_norm')
+
+                    if exists(gate_mean):
+                        reasoning_gate_mean = gate_mean if not exists(reasoning_gate_mean) else (reasoning_gate_mean + gate_mean)
+                        reasoning_stat_count += 1
+                    if exists(thought_norm):
+                        reasoning_thought_norm = thought_norm if not exists(reasoning_thought_norm) else (reasoning_thought_norm + thought_norm)
+                    if exists(future_pred_norm):
+                        reasoning_future_pred_norm = future_pred_norm if not exists(reasoning_future_pred_norm) else (reasoning_future_pred_norm + future_pred_norm)
+                    if exists(future_target_norm):
+                        reasoning_future_target_norm = future_target_norm if not exists(reasoning_future_target_norm) else (reasoning_future_target_norm + future_target_norm)
+
                 if self.neural_mem_weight_residual:
                     mem_weight_residual = next_neural_mem_cache.updates
 
                 if self.gate_attn_output:
-                    attn_out_gates = retrieved.sigmoid()
+                    attn_out_gates = context_to_add.sigmoid()
                 else:
-                    x = add_residual(retrieved)
+                    x = add_residual(context_to_add)
 
             # attention
 
@@ -918,4 +1258,39 @@ class MemoryAsContextTransformer(Module):
 
             return logits, next_cache
 
-        return F.cross_entropy(rearrange(logits, 'b n l -> b l n'), labels)
+        lm_loss = F.cross_entropy(rearrange(logits, 'b n l -> b l n'), labels)
+        total_loss = lm_loss
+
+        if exists(reasoning_aux_loss) and self.reasoning_loss_weight > 0.:
+            total_loss = total_loss + self.reasoning_loss_weight * reasoning_aux_loss
+
+        if return_loss_breakdown:
+            zero_like_loss = self.zero.to(device = lm_loss.device, dtype = lm_loss.dtype)
+            wm_loss = reasoning_aux_loss * self.reasoning_loss_weight if exists(reasoning_aux_loss) else zero_like_loss
+            wm_raw = reasoning_aux_loss.detach() if exists(reasoning_aux_loss) else zero_like_loss
+            wm_rollout_raw = reasoning_rollout_loss.detach() if exists(reasoning_rollout_loss) else zero_like_loss
+            wm_act_raw = reasoning_act_loss.detach() if exists(reasoning_act_loss) else zero_like_loss
+
+            if reasoning_stat_count > 0 and exists(reasoning_gate_mean):
+                reasoning_gate_mean_out = (reasoning_gate_mean / float(reasoning_stat_count)).detach()
+            else:
+                reasoning_gate_mean_out = zero_like_loss
+
+            reasoning_thought_norm_out = (reasoning_thought_norm / float(reasoning_stat_count)).detach() if reasoning_stat_count > 0 and exists(reasoning_thought_norm) else zero_like_loss
+            reasoning_future_pred_norm_out = (reasoning_future_pred_norm / float(reasoning_stat_count)).detach() if reasoning_stat_count > 0 and exists(reasoning_future_pred_norm) else zero_like_loss
+            reasoning_future_target_norm_out = (reasoning_future_target_norm / float(reasoning_stat_count)).detach() if reasoning_stat_count > 0 and exists(reasoning_future_target_norm) else zero_like_loss
+
+            breakdown = dict(
+                lm = lm_loss.detach(),
+                world_model = wm_loss.detach(),
+                world_model_raw = wm_raw,
+                world_model_rollout_raw = wm_rollout_raw,
+                world_model_act_raw = wm_act_raw,
+                reasoning_gate_mean = reasoning_gate_mean_out,
+                reasoning_thought_norm = reasoning_thought_norm_out,
+                reasoning_future_pred_norm = reasoning_future_pred_norm_out,
+                reasoning_future_target_norm = reasoning_future_target_norm_out
+            )
+            return total_loss, breakdown
+
+        return total_loss
